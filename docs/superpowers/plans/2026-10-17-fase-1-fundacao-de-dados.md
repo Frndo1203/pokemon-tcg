@@ -123,9 +123,9 @@ def test_token_myp_nao_tem_valor_padrao(monkeypatch):
   - Tarefa 1, Step 1: spike do GraphQL TCGdex + `tests/fixtures/tcgdex_carta_pt.json`.
   - Tarefa 2: `tests/fixtures/pokeapi_especie_384.json`.
   - Tarefa 7: `tests/fixtures/liga_carta.html` (1 requisição real, respeitando o intervalo) + variante `liga_carta_idioma_99.html`.
-  - Tarefa 10: `tests/fixtures/myp_pagina_1.json` e `myp_pagina_2.json` montadas a partir do schema `Produto` do swagger oficial (sem token ainda).
+  - Tarefa 10: `tests/fixtures/myp_carta.json` montada a partir do schema `Produto` do swagger oficial (sem token ainda).
   - Tarefa 13, Step 1: spike do `mf query` com dbt-duckdb.
-- [ ] **Step 2: Stubs Python** de todas as assinaturas das Tarefas 1–13 (inclui exceções `CartaNaoEncontrada`, `WarehouseOcupado`, `ErroEsquemaLiga`, `FonteNaoPronta` e as dataclasses `PrecoLiga`, `AlvoLiga`, `ResumoColeta`). Exceções e dataclasses são definidas de verdade, porque são contrato, não comportamento.
+- [ ] **Step 2: Stubs Python** de todas as assinaturas das Tarefas 1–13 (inclui exceções `CartaNaoEncontrada`, `WarehouseOcupado`, `ErroEsquemaLiga`, `FonteNaoPronta` e as dataclasses `PrecoLiga`, `AlvoLiga`, `ResumoColeta`, `ResumoMyp`). Exceções e dataclasses são definidas de verdade, porque são contrato, não comportamento.
 - [ ] **Step 3: Stubs dbt** de todos os modelos, seeds e snapshot das Tarefas 3, 6, 11, 13. Verificar: `uv run dbt parse --project-dir dbt` → sem erro.
 - [ ] **Step 4: `conftest.py`:** fixtures `conn` (banco `tcg_teste` no Postgres do compose, recriado por teste), `catalogo_fake`, `duckdb_travado`, `pipeline` (dlt com DuckDB em `tmp_path`), `fake_dbt`, `precos_de_10_dias_atras`, as fixtures de HTML/JSON, e os helpers `contar`, `valor`, `dias`, `alvo`, `dir_dia`, `dir_quarentena`, `fake_ok`, `fake_500_para`, `fake_html`. Marcador `e2e` registrado em `pyproject.toml`.
 - [ ] **Step 5: Testes pytest** de todas as tarefas, exatamente como descritos nos passos "Teste que falha" das Tarefas 1, 2, 4, 5, 7, 8, 9, 10, 12, 13, incluindo os da **Review Focus**.
@@ -486,38 +486,54 @@ def test_outro_dia_preservado(pipeline, bruto_dois_dias):
 
 ---
 
-### Task 10: Fonte MYP (paginação, Full Loader por dia)
+### Task 10: Fonte MYP (carta por carta, só as cartas-alvo)
 
 **Quem escreve:** Fernando. **Bloqueio externo:** o token MYP. Fernando pede em `mypcards.com/acesso-api` **no início desta fase**; se não houver resposta em 1 semana, cobra. A tarefa avança com fixture; só o Step 6 depende do token.
 
-**Conceito:** paginar até a página vir com menos de `page_size` itens; cada execução grava a "foto" do dia (Full Loader + Data Overwrite por `dt_coleta`, como na Task 9).
+**Conceito:** buscar só o que se usa. Em vez de baixar o catálogo inteiro, a lista de cartas vem do próprio warehouse (`alvos_myp`: cópias possuídas + faltantes) e cada carta vira uma requisição a `/precos/{codigo}`. Cada execução grava a "foto" das cartas-alvo naquele dia (Data Overwrite por `dt_coleta`, como na Task 9). Carta que a MYP não conhece (404) não derruba a carga: é contada e registrada.
+
+**Futuro (fora da fase 1):** carga do catálogo inteiro via `GET /pokemon/precos?page_number={n}&page_size=50`, se um dia o dashboard precisar de preço de carta fora dos alvos. O desenho já deixa o encaixe: `fonte_myp` recebe um iterador de `Produto`; o modo catálogo seria só outro gerador (`paginas_myp`) alimentando o mesmo recurso e a mesma tabela.
 
 **Files:**
-- Create: `src/pokemon_tcg/fontes/myp.py`, `tests/test_myp.py`, `tests/fixtures/myp_pagina_1.json`, `myp_pagina_2.json`, `dbt/seeds/de_para_edicoes_myp.csv`, `docs/adr/0006-myp-primaria-liga-secundaria.md`
+- Create: `src/pokemon_tcg/fontes/myp.py`, `tests/test_myp.py`, `tests/fixtures/myp_carta.json`, `dbt/seeds/de_para_edicoes_myp.csv`, `dbt/models/marts/alvos_myp.sql` + `.yml`, `docs/adr/0006-myp-primaria-liga-secundaria.md`
 
 **Interfaces:**
-- Produces: `paginas_myp(buscar: Callable[[int], dict], tamanho: int = 50) -> Iterator[list[dict]]`; `fonte_myp(token: str, dt: date)` → `bruto.myp_precos(internal_code, card_code, edition_code, name_pt, min_price, avg_price, max_price, tcg_price, img_pt, link, dt_coleta)`, `delete-insert` por `dt_coleta`. Endpoint: `GET https://mypcards.com/api/v1/pokemon/precos?page_number={n}&page_size=50`, header `X-Api-Token`.
-- Seed `de_para_edicoes_myp(tcgdex_set_id, myp_edition_code)`.
+- Consumes: `int_copias_com_destino`, `faltantes_por_colecao` (Task 6), seed `de_para_edicoes_myp`.
+- Produces:
+  - `codificar_codigo(codigo: str) -> str`: Base64 do código MYP (ex. `LOB-001` → `TE9CLTAwMQ==`).
+  - `precos_por_carta(codigos: Iterable[str], buscar: Callable[[str], dict | None]) -> Iterator[dict]`: um `Produto` por código encontrado; `buscar` devolve `None` em 404 e o código entra em `ResumoMyp.nao_encontrados`.
+  - `fonte_myp(token: str, dt: date, codigos: Iterable[str])` → `bruto.myp_precos(internal_code, card_code, edition_code, name_pt, min_price, avg_price, max_price, tcg_price, img_pt, link, dt_coleta)`, `delete-insert` por `dt_coleta`. Endpoint: `GET https://mypcards.com/api/v1/pokemon/precos/{codigo_base64}`, header `X-Api-Token`.
+  - Dataclass `ResumoMyp(consultados: int, encontrados: int, nao_encontrados: list[str])`.
+  - Mart `alvos_myp`: grão `codigo_myp` (distinto), colunas `carta_id`, `codigo_myp`, `motivo` ∈ {`possuida`, `faltante`} (`possuida` vence quando a carta é as duas coisas). Carta sem de-para de edição fica de fora e aparece num teste dbt `severity: warn`.
+  - Seed `de_para_edicoes_myp(tcgdex_set_id, myp_edition_code)`.
 
 - [ ] **Step 1: Testes que falham:**
 
 ```python
-def test_para_quando_pagina_incompleta():
-    paginas = {1: {"cards": [{}] * 50}, 2: {"cards": [{}] * 3}}
-    assert [len(p) for p in paginas_myp(lambda n: paginas[n])] == [50, 3]
+def test_codigo_vai_em_base64():
+    assert codificar_codigo("LOB-001") == "TE9CLTAwMQ=="
 
-def test_para_em_pagina_vazia():
-    paginas = {1: {"cards": [{}] * 50}, 2: {"cards": []}}
-    assert [len(p) for p in paginas_myp(lambda n: paginas[n])] == [50]
+def test_uma_requisicao_por_codigo():
+    chamados = []
+    def buscar(c):
+        chamados.append(c)
+        return {"card_code": c}
+    list(precos_por_carta(["A-1", "B-2"], buscar))
+    assert chamados == ["A-1", "B-2"]
+
+def test_carta_desconhecida_nao_derruba_a_carga():
+    buscar = lambda c: None if c == "X-9" else {"card_code": c}
+    assert [p["card_code"] for p in precos_por_carta(["A-1", "X-9", "B-2"], buscar)] == ["A-1", "B-2"]
 
 def test_sem_token_falha_com_mensagem():
     with pytest.raises(ValueError, match="MYP_API_TOKEN"):
-        fonte_myp(token=None, dt=DT)
+        fonte_myp(token=None, dt=DT, codigos=["A-1"])
 ```
 
+  Unit test dbt de `alvos_myp`: 1 cópia possuída + 1 faltante da mesma carta → 1 linha com `motivo = possuida`; carta sem de-para → 0 linhas.
 - [ ] **Step 2:** Rodar → FAIL. **Step 3:** Implementar. **Step 4:** Rodar → PASS.
-- [ ] **Step 5:** ADR-0006 (inclui: MYP reflete mercado de trocas entre colecionadores; sem idioma, condição nem japonesas) + commit `feat: fonte MYP paginada`.
-- [ ] **Step 6 (quando houver token):** carga real; descobrir o formato de `card_code` e `edition_code` e preencher o de-para para as edições das cartas possuídas. Verificar: `select count(*) from bruto.myp_precos` > 1000.
+- [ ] **Step 5:** ADR-0006 (inclui: MYP reflete mercado de trocas entre colecionadores; sem idioma, condição nem japonesas; só cartas-alvo, catálogo inteiro como opção futura) + commit `feat: fonte MYP por carta`.
+- [ ] **Step 6 (quando houver token):** spike com 3 cartas possuídas para descobrir o formato exato de `{codigo}` (`card_code`? `edition_code` + número?) e preencher o de-para para as edições das cartas possuídas; ajustar `alvos_myp` se o formato pedir. Verificar: `select count(*) from bruto.myp_precos where dt_coleta = current_date` = `select count(*) from alvos_myp` − `nao_encontrados`.
 
 ---
 
@@ -563,7 +579,7 @@ def test_sem_token_falha_com_mensagem():
   - `ingerir_inventario()`.
   - Toda ingestão chama `marcar_pronto(<fonte>, dt)` ao terminar sem erro; nomes de fonte: `tcgdex`, `pokeapi`, `inventario`, `myp`, `liga`.
   - `transformar(fontes_exigidas: list[str], dt: date)`: falha com `FonteNaoPronta` se faltar marcador; senão, AWAP: `dbt build --exclude tag:marts` (write) → `dbt test --select tag:auditoria_precos` (audit) → `dbt snapshot` → `dbt build --select tag:marts` (publish) → `exportar_metricas()` (Task 13) → `npm run sources` no Evidence.
-  - `atualizar_precos(escopo: Literal["a_venda", "colecao", "tudo"] = "a_venda")`: `ingerir_inventario` → MYP (se houver token; senão loga aviso e segue) → Liga com alvos do escopo (`a_venda` = cópias `venda` com URL; `colecao` = cópias `ja`; `tudo` = união) → `transformar`.
+  - `atualizar_precos(escopo: Literal["a_venda", "colecao", "tudo"] = "a_venda")`: `ingerir_inventario` → MYP com os códigos de `alvos_myp` (se houver token; senão loga aviso e segue) → Liga com alvos do escopo (`a_venda` = cópias `venda` com URL; `colecao` = cópias `ja`; `tudo` = união) → `transformar`.
   - `verificar_frescor() -> int`: dias desde o último `observado_em`; se > `LIMIAR_DIAS_PRECO_VELHO`, cria artefato markdown no Prefect "Preços com N dias. Rode atualizar_precos." e loga `WARNING`.
 - Deployments servidos por `servir.py`: `atualizar-precos`, `ingerir-catalogo`, `verificar-frescor`. **Sem agendamento** (o sistema não fica ligado).
 

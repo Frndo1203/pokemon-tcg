@@ -62,6 +62,8 @@ O projeto tem um **segundo objetivo, tão importante quanto o primeiro**: ser o 
 | **MYP Cards API** (`mypcards.com/api/v1`) | **Preço BRL primário** | Header `X-Api-Token`, pedido em `mypcards.com/acesso-api` (aprovação manual) | Listagem paginada de **todo** o catálogo Pokémon (50 por página). `min_price`/`avg_price`/`max_price` em BRL, `tcg_price` (USD), `name_pt`, `edition_code`, `card_code`, `img_pt`. **Não tem**: separação por idioma, condição, histórico, edições japonesas ("edições orientais não são retornadas"). Reflete mercado entre colecionadores (trocas), não só lojas. Exige atribuição. |
 | **LigaPokémon** (`ligapokemon.com.br`) | **Preço BRL secundário**, só onde a MYP não cobre | Scraping de HTML, sem API | Preço embutido como JSON na página: `cards_editions` (`price` por idioma, `p/m/g` = mín/méd/máx) e `cards_stock` (ofertas com `precoFinal`, `qualid`, `idioma`). Idiomas: 8=PT, 2=EN, 6=JP. Condição: 1=M, 2=NM, 3=SP, 4=MP, 5=HP. Códigos de edição próprios (precisa de tabela de-para com TCGdex). **6 minutos por requisição.** |
 
+**Escopo da MYP:** só as cartas-alvo (possuídas + faltantes), via `GET /pokemon/precos/{codigo}` (código em Base64), poucas vezes por semana. Catálogo inteiro paginado fica como opção futura, se o dashboard precisar de preço fora dos alvos. *Decisão do Fernando, 2026-10-18.*
+
 **Escopo da Liga:** apenas cartas japonesas **possuídas** e, opcionalmente, cartas à venda onde a condição importa. Cartas faltantes são precificadas só pela MYP. Se o token da MYP for negado, a Liga volta a ser fonte primária (ver risco R1).
 
 **Qual número é "o preço":** `avg_price` (MYP) / `m` (Liga) é o preço de referência para valor de venda; mínimo e máximo aparecem ao lado como faixa. *Decisão do assistente.*
@@ -107,7 +109,7 @@ Cada linha vira um ADR (seção 9).
    - **Identidade da carta = edição + número**, nunca só o número. Cartas com o mesmo número em edições diferentes são cartas diferentes (acontece com reimpressões dos clássicos, como na coleção de 30 anos). *Decisão do Fernando.*
    - **Lista de referência = catálogo `pt`.** Uma cópia em inglês da mesma edição + número preenche a vaga da carta em português. Cartas japonesas não preenchem vagas: aparecem no inventário como extras. *Sugestão do assistente, não contestada.*
    - **Regra de destino (derivada, não digitada):** uma cópia pode preencher as duas coleções ao mesmo tempo (ex.: Rayquaza é Dragão e Lendário); a primeira cópia de uma carta que pertence a alguma coleção fica na coleção; cópias extras e cartas fora das duas coleções vão para venda; Fernando pode sobrescrever manualmente por cópia. *Decisão do Fernando.*
-4. **Preços:** MYP (carga completa via API) + Liga (escopo restrito, com HTML bruto guardado). Histórico próprio via **dbt snapshot (SCD2)**.
+4. **Preços:** MYP (via API, só as cartas-alvo: possuídas + faltantes, uma requisição por carta) + Liga (escopo restrito, com HTML bruto guardado). Histórico próprio via **dbt snapshot (SCD2)**.
 5. **Seed de-para** de códigos de edição: TCGdex `set.id` ↔ MYP `edition_code` ↔ Liga `ed`.
 6. **Marts:** `faltantes_por_colecao`, `cartas_para_venda`, `historico_precos`, `resumo_colecao` (contagens e percentuais).
 7. **Métricas** no Semantic Layer: `cartas_faltantes`, `pct_completo`, `valor_venda_brl`, entre outras.
@@ -142,7 +144,7 @@ Cada padrão ganha uma página no catálogo (seção 9). Nomes seguem o livro; a
 
 | Capítulo | Padrão | Onde aparece |
 |---|---|---|
-| Ingestão | **Full Loader** | Catálogo TCGdex, catálogo de preços MYP, espécies PokeAPI |
+| Ingestão | **Full Loader** | Catálogo TCGdex, espécies PokeAPI |
 | Ingestão | **Incremental Loader** | Inventário do Postgres para o DuckDB |
 | Ingestão | **Readiness Marker** | dbt só roda depois da ingestão terminar e marcar pronto |
 | Erros | **Dead-Letter** | Páginas da Liga que falham no parse vão para uma área de quarentena |
