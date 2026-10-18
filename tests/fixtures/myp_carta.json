@@ -1,0 +1,22 @@
+{
+  "internal_code": 98765,
+  "card_code": "EVS-218",
+  "id_marca": 2,
+  "tcg_productId": 246723,
+  "name_pt": "Rayquaza VMAX",
+  "name_en": "Rayquaza VMAX",
+  "slug_pt": "rayquaza-vmax",
+  "slug_en": "rayquaza-vmax",
+  "edition_pt": "Céus em Evolução",
+  "edition_en": "Evolving Skies",
+  "edition_code": "EVS",
+  "deck_labels": ["Rayquaza VMAX EVS 218", "Rayquaza VMAX EVS (218/203)"],
+  "min_price": "1450.00",
+  "avg_price": "1890.00",
+  "max_price": "2600.00",
+  "tcg_price": "520.00",
+  "available_quantity": 4,
+  "img_pt": "https://mypcards.com/img/exemplo-pt.jpg",
+  "img_en": "https://mypcards.com/img/exemplo-en.jpg",
+  "link": "https://mypcards.com/pokemon/produto/98765/rayquaza-vmax"
+}
