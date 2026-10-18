@@ -1,0 +1,129 @@
+{
+  "category": "Pokémon",
+  "id": "swsh7-218",
+  "illustrator": "Anesaki Dynamic",
+  "image": "https://assets.tcgdex.net/pt/swsh/swsh7/218",
+  "localId": "218",
+  "name": "Rayquaza VMAX",
+  "rarity": "Rare Secreta",
+  "set": {
+    "cardCount": {
+      "official": 203,
+      "total": 237
+    },
+    "id": "swsh7",
+    "logo": "https://assets.tcgdex.net/pt/swsh/swsh7/logo",
+    "name": "Céus em Evolução",
+    "symbol": "https://assets.tcgdex.net/univ/swsh/swsh7/symbol"
+  },
+  "variants": {
+    "firstEdition": false,
+    "holo": true,
+    "normal": false,
+    "reverse": false,
+    "wPromo": false
+  },
+  "variants_detailed": [
+    {
+      "type": "Holo",
+      "size": "Padrão",
+      "thirdParty": {
+        "cardmarket": 574276,
+        "tcgplayer": 246733
+      },
+      "variantId": "jr7oetx1mqug9",
+      "pricing": {
+        "cardmarket": {
+          "updated": "2026-10-17T22:54:32.870Z",
+          "unit": "EUR",
+          "idProduct": 574276,
+          "avg": 1182.34,
+          "low": 230,
+          "trend": 1113.12,
+          "avg1": 1000,
+          "avg7": 1249.97,
+          "avg30": 1040.8,
+          "avg-holo": null,
+          "low-holo": null,
+          "trend-holo": 0,
+          "avg1-holo": null,
+          "avg7-holo": null,
+          "avg30-holo": null
+        },
+        "tcgplayer": {
+          "unit": "USD",
+          "updated": "2026-10-14T22:55:06.653Z",
+          "holofoil": {
+            "productId": 246733,
+            "lowPrice": 989.01,
+            "midPrice": 1268.52,
+            "highPrice": 4499.99,
+            "marketPrice": 1268.52,
+            "directLowPrice": 1399.99
+          }
+        }
+      }
+    }
+  ],
+  "dexId": [
+    384
+  ],
+  "hp": 320,
+  "types": [
+    "Dragão"
+  ],
+  "evolveFrom": "Rayquaza V",
+  "stage": "VMAX",
+  "abilities": [
+    {
+      "type": "Habilidade"
+    }
+  ],
+  "attacks": [
+    {
+      "cost": [
+        "Fogo",
+        "Elétrico"
+      ],
+      "damage": "20+"
+    }
+  ],
+  "retreat": 2,
+  "regulationMark": "E",
+  "legal": {
+    "standard": false,
+    "expanded": true
+  },
+  "updated": "2026-08-19T20:16:55Z",
+  "pricing": {
+    "cardmarket": {
+      "updated": "2026-10-17T22:54:32.870Z",
+      "unit": "EUR",
+      "idProduct": 574276,
+      "avg": 1182.34,
+      "low": 230,
+      "trend": 1113.12,
+      "avg1": 1000,
+      "avg7": 1249.97,
+      "avg30": 1040.8,
+      "avg-holo": null,
+      "low-holo": null,
+      "trend-holo": 0,
+      "avg1-holo": null,
+      "avg7-holo": null,
+      "avg30-holo": null
+    },
+    "tcgplayer": {
+      "unit": "USD",
+      "updated": "2026-10-14T22:55:06.653Z",
+      "holofoil": {
+        "productId": 246733,
+        "lowPrice": 989.01,
+        "midPrice": 1268.52,
+        "highPrice": 4499.99,
+        "marketPrice": 1268.52,
+        "directLowPrice": 1399.99
+      }
+    }
+  }
+}
