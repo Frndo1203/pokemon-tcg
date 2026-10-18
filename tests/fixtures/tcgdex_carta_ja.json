@@ -1,0 +1,114 @@
+{
+  "category": "Pokemon",
+  "id": "M5-115",
+  "illustrator": "NC Empire",
+  "localId": "115",
+  "name": "モルペコex",
+  "rarity": "Special illustration rare",
+  "set": {
+    "cardCount": {
+      "official": 81,
+      "total": 118
+    },
+    "id": "M5",
+    "name": "アビスアイ"
+  },
+  "variants": {
+    "firstEdition": false,
+    "holo": true,
+    "normal": false,
+    "reverse": false,
+    "wPromo": false
+  },
+  "variants_detailed": [
+    {
+      "type": "holo",
+      "size": "standard",
+      "thirdParty": {
+        "cardmarket": 888660
+      },
+      "variantId": "jr7oetx1mqug9",
+      "pricing": {
+        "cardmarket": {
+          "updated": "2026-10-17T22:54:32.867Z",
+          "unit": "EUR",
+          "idProduct": 888660,
+          "avg": 27.63,
+          "low": 23,
+          "trend": 26.94,
+          "avg1": 23.63,
+          "avg7": 28.99,
+          "avg30": 26.38,
+          "avg-holo": null,
+          "low-holo": null,
+          "trend-holo": 0,
+          "avg1-holo": null,
+          "avg7-holo": null,
+          "avg30-holo": null
+        },
+        "tcgplayer": null
+      }
+    }
+  ],
+  "dexId": [
+    877
+  ],
+  "hp": 180,
+  "types": [
+    "Darkness"
+  ],
+  "stage": "Basic",
+  "suffix": "EX",
+  "attacks": [
+    {
+      "cost": [
+        "Darkness"
+      ],
+      "name": "ホイールドロー",
+      "effect": "自分の手札をすべて山札にもどして切る。その後、山札を6枚引く。"
+    },
+    {
+      "cost": [
+        "Darkness",
+        "Darkness"
+      ],
+      "name": "はらぺこボンバー",
+      "effect": "このポケモンにのっているダメカンの数×40ダメージ追加。",
+      "damage": "40+"
+    }
+  ],
+  "weaknesses": [
+    {
+      "type": "Grass",
+      "value": "x2"
+    }
+  ],
+  "resistances": [],
+  "retreat": 1,
+  "regulationMark": "J",
+  "legal": {
+    "standard": true,
+    "expanded": false
+  },
+  "updated": "2026-09-16T22:51:33.303Z",
+  "pricing": {
+    "cardmarket": {
+      "updated": "2026-10-17T22:54:32.867Z",
+      "unit": "EUR",
+      "idProduct": 888660,
+      "avg": 27.63,
+      "low": 23,
+      "trend": 26.94,
+      "avg1": 23.63,
+      "avg7": 28.99,
+      "avg30": 26.38,
+      "avg-holo": null,
+      "low-holo": null,
+      "trend-holo": 0,
+      "avg1-holo": null,
+      "avg7-holo": null,
+      "avg30-holo": null
+    },
+    "tcgplayer": null
+  }
+}
