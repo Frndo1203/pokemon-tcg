@@ -1,0 +1,10 @@
+.env
+dados/
+dbt/target/
+dbt/logs/
+evidence/.evidence/
+evidence/node_modules/
+.venv/
+__pycache__/
+.pytest_cache/
+.superpowers/

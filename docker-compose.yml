@@ -1,0 +1,58 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tcg}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tcg}
+      POSTGRES_DB: ${POSTGRES_DB:-tcg}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_dados:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-tcg}"]
+      interval: 5s
+      retries: 10
+
+  prefect-server:
+    image: prefecthq/prefect:3-python3.12
+    command: prefect server start --host 0.0.0.0
+    ports:
+      - "4200:4200"
+
+  # Roda os deployments do Prefect (Tarefa 12). Até lá reinicia em loop: esperado.
+  servidor-fluxos:
+    build: .
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PREFECT_API_URL: http://prefect-server:4200/api
+      POSTGRES_DSN: postgresql://${POSTGRES_USER:-tcg}:${POSTGRES_PASSWORD:-tcg}@postgres:5432/${POSTGRES_DB:-tcg}
+      DIR_DADOS: /app/dados
+    volumes:
+      - ./dados:/app/dados
+      - ./dbt:/app/dbt
+    depends_on:
+      postgres:
+        condition: service_healthy
+      prefect-server:
+        condition: service_started
+    restart: unless-stopped
+
+  # Dashboard (Tarefa 14). Sem projeto Evidence ainda, só fica parado.
+  evidence:
+    image: node:22-alpine
+    working_dir: /app
+    command: sh -c "if [ -f package.json ]; then npm install && npm run dev -- --host 0.0.0.0; else sleep infinity; fi"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./evidence:/app
+      - ./dados:/dados:ro
+
+volumes:
+  pg_dados:

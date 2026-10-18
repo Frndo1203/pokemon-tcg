@@ -1,0 +1,32 @@
+[project]
+name = "pokemon-tcg"
+version = "0.1.0"
+description = "Inventário, faltantes e preços BRL de cartas Pokémon TCG (projeto pessoal)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "dbt-core>=1.8",
+    "dbt-duckdb>=1.8",
+    "dbt-metricflow[duckdb]>=0.15.0",
+    "dlt[duckdb,postgres]>=1.31.0",
+    "duckdb>=1.5.6",
+    "httpx>=0.28.1",
+    "prefect>=3.8.8",
+    "prefect-dbt>=0.7.25",
+    "psycopg[binary]>=3.3.6",
+    "tcgdex-sdk>=2.3.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.1,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-playwright>=0.10.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["e2e: testes do dashboard com navegador (precisa do make up)"]
