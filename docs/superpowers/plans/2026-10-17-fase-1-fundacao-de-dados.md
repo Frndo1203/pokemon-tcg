@@ -8,7 +8,7 @@
 
 **Goal:** Inventário, catálogo, faltantes por coleção e preços BRL com histórico próprio, visíveis num dashboard local que liga e desliga com um comando.
 
-**Architecture:** Fontes (TCGdex, PokeAPI, MYP, Liga, inventário Postgres) entram por dlt numa camada `bruto` do DuckDB; dbt transforma em staging → intermediate → marts, com snapshot SCD2 de preços; Prefect orquestra ingestão → auditoria → publicação; Evidence lê os marts. Tudo sobe com `make up` e desce com `make down`.
+**Architecture:** Fontes (TCGdex com preços Cardmarket, PokeAPI, MYP, câmbio PTAX, inventário Postgres) entram por dlt numa camada `bruto` do DuckDB; dbt transforma em staging → intermediate → marts, com snapshot SCD2 de preços; Prefect orquestra ingestão → auditoria → publicação; Evidence lê os marts. Tudo sobe com `make up` e desce com `make down`.
 
 **Tech Stack:** Python 3.12, uv, dlt, DuckDB, Postgres 16 (Docker), psycopg 3, dbt-core + dbt-duckdb (≥ 1.8, para unit tests), dbt-metricflow[duckdb], Prefect 3 + prefect-dbt, Evidence.dev, httpx, pytest, Docker Compose, Make.
 
@@ -18,12 +18,12 @@
 
 - Tudo em português: nomes de tabelas, colunas, modelos dbt, módulos, mensagens, docs. Identificadores sem acento (`condicao`, `preco_medio`).
 - Custo zero. Proibido: Spark, Kafka, nuvem, dbt Cloud, qualquer serviço pago.
-- LigaPokémon: no máximo **1 requisição a cada 360 segundos**; `User-Agent` identificável (`pokemon-tcg-pessoal/0.1 (+oliveirafer06@gmail.com)`); nunca acessar `?view=cards/pricehistory`.
+- Toda requisição HTTP usa `User-Agent` identificável (`pokemon-tcg-pessoal/0.1 (+oliveirafer06@gmail.com)`); TCGdex com cache local. LigaPokémon fora da fase 1 (Cloudflare; ver ADR-0005).
 - MYP: token só via variável `MYP_API_TOKEN` em `.env` (não versionado); atribuição visível "Preços: MYP Cards" com link `https://mypcards.com` em toda tela que mostra preço MYP.
 - Segredos nunca em código nem em log.
 - Identidade da carta = id TCGdex (`<set.id>-<localId>`, ex. `sv03.5-199`) = edição + número. Nunca só o número.
 - Raridades-alvo: Dupla Rara (Double Rare) e acima; fora: Comum, Incomum, Rara, Rara Holo.
-- Preço de referência: médio (`avg_price` MYP, `m` Liga); mínimo e máximo como faixa. Todo preço exibido mostra "preço visto em DD/MM".
+- Preço de referência: médio (`avg_price` MYP; `avg` Cardmarket × PTAX do dia ou do último dia útil anterior); mínimo e máximo como faixa (Cardmarket não tem máximo: faixa só com mínimo). Todo preço exibido mostra "preço visto em DD/MM".
 - Commits: mensagens em português, estilo Conventional Commits, **sem** trailer `Co-Authored-By`.
 - UI: toda construção/redesenho de interface passa pela skill Hallmark; pronta só após screenshots a 1440px e 390px checadas.
 - TDD: nenhum código de produção antes da Tarefa T terminar com a suíte inteira vermelha; cada tarefa termina com seus testes verdes **e** `uv run pytest -m "not e2e"` sem regressão nos testes já verdes.
@@ -32,7 +32,7 @@
 
 1. **Carta no inventário que não existe no catálogo** (id digitado errado, edição nova ainda não carregada): CLI recusa com mensagem clara; dbt acusa em `copias_sem_catalogo`. Testes nas Tarefas 4 e 6.
 2. **Cópia editada ou apagada depois da carga incremental**: a alteração aparece no DuckDB; apagar é soft delete (`removido_em`), nunca `DELETE`. Teste na Tarefa 5.
-3. **Mac desligado no meio da coleta da Liga**: ao religar, a coleta retoma sem repetir cartas já baixadas no dia. Teste na Tarefa 8.
+3. **Preço observado em fim de semana ou feriado** (sem PTAX no dia): usa a cotação do último dia útil anterior; sem nenhuma cotação anterior, o BRL fica nulo e um teste dbt avisa, sem inventar câmbio. Teste na Tarefa 11.
 4. **Preço absurdo (R$ 0 ou 100× a mediana)**: auditoria bloqueia a publicação e os marts mantêm a versão anterior. Teste na Tarefa 11.
 5. **DuckDB travado por outro processo** (CLI lendo enquanto o fluxo escreve): mensagem "pipeline rodando, tente de novo em instantes", sem stack trace. Teste na Tarefa 4.
 
@@ -51,10 +51,8 @@ pokemon-tcg/
       pokeapi.py              # fonte dlt de espécies
       myp.py                  # fonte dlt de preços MYP
       inventario.py           # fonte dlt incremental Postgres -> DuckDB
-      liga/
-        parser.py             # HTML -> registros (função pura)
-        coletor.py            # coleta com crawl-delay, bruto, checkpoint, quarentena
-        fonte.py              # fonte dlt que relê o bruto (replay)
+      cardmarket.py           # preços Cardmarket (EUR) do detalhe TCGdex, só cartas-alvo
+      ptax.py                 # câmbio EUR/BRL do Banco Central
     inventario/
       schema.sql              # tabela copias no Postgres
       cli.py                  # comando `tcg`
@@ -62,12 +60,12 @@ pokemon-tcg/
       ingestao.py  transformacao.py  precos.py  frescor.py  metricas.py  servir.py
   dbt/
     dbt_project.yml  profiles.yml
-    seeds/ raridades_alvo.csv  de_para_edicoes_myp.csv  liga_urls.csv
+    seeds/ raridades_alvo.csv  de_para_edicoes_myp.csv
     models/staging/  models/intermediate/  models/marts/  models/semantic/
     snapshots/snp_precos.sql
   evidence/  (projeto Evidence: pages/index.md, fichario.md, venda.md, precos.md)
   docs/adr/  docs/padroes/
-  dados/  (não versionado) warehouse.duckdb, bruto/, quarentena/
+  dados/  (não versionado) warehouse.duckdb, bruto/
   tests/ fixtures/  test_*.py
 ```
 
@@ -81,7 +79,7 @@ pokemon-tcg/
 - Create: `pyproject.toml`, `Makefile`, `docker-compose.yml`, `Dockerfile`, `.env.example`, `.gitignore`, `src/pokemon_tcg/__init__.py`, `src/pokemon_tcg/config.py`, `tests/test_config.py`, `docs/adr/0000-modelo.md`, `docs/padroes/_modelo.md`, `README.md`
 
 **Interfaces:**
-- Produces: `config.CAMINHO_DUCKDB: Path` (`dados/warehouse.duckdb`), `config.DIR_BRUTO: Path` (`dados/bruto`), `config.DIR_QUARENTENA: Path` (`dados/quarentena`), `config.POSTGRES_DSN: str` (de `POSTGRES_DSN`), `config.MYP_API_TOKEN: str | None`, `config.USER_AGENT: str`, `config.LIGA_INTERVALO_S: int = 360`, `config.LIMIAR_DIAS_PRECO_VELHO: int = 7`.
+- Produces: `config.CAMINHO_DUCKDB: Path` (`dados/warehouse.duckdb`), `config.DIR_BRUTO: Path` (`dados/bruto`), `config.POSTGRES_DSN: str` (de `POSTGRES_DSN`), `config.MYP_API_TOKEN: str | None`, `config.USER_AGENT: str`, `config.LIMIAR_DIAS_PRECO_VELHO: int = 7`.
 - `make up` sobe `postgres`, `prefect-server`, `servidor-fluxos`, `evidence`; `make down` derruba tudo; `make test` roda `uv run pytest`.
 
 - [ ] **Step 1:** `git init`; `uv init --package --name pokemon-tcg --python 3.12`; adicionar dependências do Tech Stack.
@@ -90,8 +88,8 @@ pokemon-tcg/
 ```python
 from pokemon_tcg import config
 
-def test_intervalo_liga_respeita_robots():
-    assert config.LIGA_INTERVALO_S >= 360
+def test_user_agent_identificavel():
+    assert "@" in config.USER_AGENT
 
 def test_token_myp_nao_tem_valor_padrao(monkeypatch):
     monkeypatch.delenv("MYP_API_TOKEN", raising=False)
@@ -122,15 +120,16 @@ def test_token_myp_nao_tem_valor_padrao(monkeypatch):
 - [ ] **Step 1: Spikes e fixtures** (puxados das tarefas, porque os testes dependem deles):
   - Tarefa 1, Step 1: spike do GraphQL TCGdex + `tests/fixtures/tcgdex_carta_pt.json`.
   - Tarefa 2: `tests/fixtures/pokeapi_especie_384.json`.
-  - Tarefa 7: `tests/fixtures/liga_carta.html` (1 requisição real, respeitando o intervalo) + variante `liga_carta_idioma_99.html`.
+  - Tarefa 7: `tests/fixtures/ptax_periodo.json` (resposta real de uma semana).
+  - Tarefa 8: `tests/fixtures/tcgdex_carta_ja.json` (carta `ja` real com `pricing.cardmarket`).
   - Tarefa 10: `tests/fixtures/myp_carta.json` montada a partir do schema `Produto` do swagger oficial (sem token ainda).
   - Tarefa 13, Step 1: spike do `mf query` com dbt-duckdb.
-- [ ] **Step 2: Stubs Python** de todas as assinaturas das Tarefas 1–13 (inclui exceções `CartaNaoEncontrada`, `WarehouseOcupado`, `ErroEsquemaLiga`, `FonteNaoPronta` e as dataclasses `PrecoLiga`, `AlvoLiga`, `ResumoColeta`, `ResumoMyp`). Exceções e dataclasses são definidas de verdade, porque são contrato, não comportamento.
+- [ ] **Step 2: Stubs Python** de todas as assinaturas das Tarefas 1–13 (inclui exceções `CartaNaoEncontrada`, `WarehouseOcupado`, `FonteNaoPronta` e as dataclasses `ResumoCardmarket`, `ResumoMyp`). Exceções e dataclasses são definidas de verdade, porque são contrato, não comportamento.
 - [ ] **Step 3: Stubs dbt** de todos os modelos, seeds e snapshot das Tarefas 3, 6, 11, 13. Verificar: `uv run dbt parse --project-dir dbt` → sem erro.
-- [ ] **Step 4: `conftest.py`:** fixtures `conn` (banco `tcg_teste` no Postgres do compose, recriado por teste), `catalogo_fake`, `duckdb_travado`, `pipeline` (dlt com DuckDB em `tmp_path`), `fake_dbt`, `precos_de_10_dias_atras`, as fixtures de HTML/JSON, e os helpers `contar`, `valor`, `dias`, `alvo`, `dir_dia`, `dir_quarentena`, `fake_ok`, `fake_500_para`, `fake_html`. Marcador `e2e` registrado em `pyproject.toml`.
-- [ ] **Step 5: Testes pytest** de todas as tarefas, exatamente como descritos nos passos "Teste que falha" das Tarefas 1, 2, 4, 5, 7, 8, 9, 10, 12, 13, incluindo os da **Review Focus**.
+- [ ] **Step 4: `conftest.py`:** fixtures `conn` (banco `tcg_teste` no Postgres do compose, recriado por teste), `catalogo_fake`, `duckdb_travado`, `pipeline` (dlt com DuckDB em `tmp_path`), `fake_dbt`, `precos_de_10_dias_atras`, as fixtures de HTML/JSON, e os helpers `contar`, `valor`, `dias`, `alvo`, `fake_tcgdex`, `fake_ptax`, `fake_fontes`. Marcador `e2e` registrado em `pyproject.toml`.
+- [ ] **Step 5: Testes pytest** de todas as tarefas, exatamente como descritos nos passos "Teste que falha" das Tarefas 1, 2, 4, 5, 7, 8, 10, 12, 13, incluindo os da **Review Focus**.
 - [ ] **Step 6: Testes dbt:** unit tests das Tarefas 3, 6, 11 e testes de auditoria da Tarefa 11 (tag `auditoria_precos`), mais os testes de dados (`unique`, `not_null`, `relationships`, `copias_sem_catalogo` com `severity: warn`).
-- [ ] **Step 7: Teste e2e do dashboard** (`tests/e2e/test_dashboard.py`, `pytest-playwright`, marcador `e2e`): para cada página (`/`, `/fichario`, `/venda`, `/precos`), a 1440px e 390px: carrega sem erro no console; sem rolagem horizontal (`document.documentElement.scrollWidth <= window.innerWidth`); `/` e `/fichario` contêm "faltam"; `/venda` contém "preço visto em" e "Preços: MYP Cards".
+- [ ] **Step 7: Teste e2e do dashboard** (`tests/e2e/test_dashboard.py`, `pytest-playwright`, marcador `e2e`): para cada página (`/`, `/fichario`, `/venda`, `/precos`), a 1440px e 390px: carrega sem erro no console; sem rolagem horizontal (`document.documentElement.scrollWidth <= window.innerWidth`); `/` e `/fichario` contêm "faltam"; `/venda` contém "preço visto em" e "Cardmarket" (e "Preços: MYP Cards" quando houver preço MYP).
 - [ ] **Step 8: Para cada teste, uma linha de comentário** dizendo que mudança no código de produção o faria falhar. Teste sem resposta clara é reescrito ou removido.
 - [ ] **Step 9: Verificar vermelho:**
   - `uv run pytest -m "not e2e" -q` → **0 errors** de coleta; todos os testes das Tarefas 1–13 falham com `NotImplementedError` ou `AssertionError`; só `tests/test_config.py` (Tarefa 0) passa.
@@ -376,113 +375,98 @@ def test_remocao_aparece(pipeline, conn):
 
 ---
 
-### Task 7: Parser da Liga (Schema Compatibility Enforcer)
+### Task 7: Câmbio PTAX (Incremental Loader por data)
 
-**Quem escreve:** Fernando. **Conceito:** isolar o parse numa função pura (HTML → registros) torna o código testável sem rede e permite reprocessar o bruto. **Schema Compatibility Enforcer:** se o HTML mudar e as variáveis esperadas sumirem, falhar alto com erro específico em vez de gravar lixo.
+**Quem escreve:** Fernando. **Conceito — Incremental Loader por tempo:** o dlt guarda a última data carregada (`dlt.sources.incremental("dt")`) e a próxima execução só pede o período depois dela. Compare com a Task 5, onde o cursor é `atualizado_em` de uma tabela que muda; aqui o cursor é o próprio calendário. Fim de semana e feriado não têm cotação: período sem dados é normal, não erro.
 
 **Files:**
-- Create: `src/pokemon_tcg/fontes/liga/parser.py`, `tests/test_liga_parser.py`, `tests/fixtures/liga_carta.html`, `docs/padroes/schema-compatibility-enforcer.md`
+- Create: `src/pokemon_tcg/fontes/ptax.py`, `tests/test_ptax.py`, `tests/fixtures/ptax_periodo.json`, `docs/padroes/incremental-loader.md` (seção "por tempo"), `docs/adr/0005-precos-japonesas-cardmarket-ptax.md`
 
 **Interfaces:**
-- Produces: `parsear_pagina(html: str) -> list[PrecoLiga]`, onde `PrecoLiga` é `dataclass(frozen=True)` com `idioma: str` (`pt`/`en`/`ja`), `preco_min: Decimal`, `preco_medio: Decimal`, `preco_max: Decimal`; `class ErroEsquemaLiga(Exception)`. Mapa de idioma da Liga: `{8: "pt", 2: "en", 6: "ja"}`; outros ids são ignorados. Campos `p`/`m`/`g` = min/médio/max.
+- Produces:
+  - `normalizar_cotacao(bruta: dict) -> dict` com `dt: date` (de `dataHoraCotacao`), `eur_brl: Decimal` (de `cotacaoVenda`).
+  - `cotacoes_ptax(de: date, ate: date, buscar: Callable[[date, date], list[dict]]) -> Iterator[dict]`: só boletim `Fechamento`, já normalizado.
+  - `fonte_ptax(inicio: date = date(2026, 1, 1))` → `bruto.ptax_eur(dt, eur_brl)`, `write_disposition="merge"`, `primary_key="dt"`, cursor incremental em `dt`. Endpoint: `GET https://olinda.bcb.gov.br/olinda/servico/PTAX/versao/v1/odata/CotacaoMoedaPeriodo(moeda=@moeda,dataInicial=@dataInicial,dataFinalCotacao=@dataFinalCotacao)?@moeda='EUR'&@dataInicial='MM-DD-AAAA'&@dataFinalCotacao='MM-DD-AAAA'&$format=json` (datas no formato americano).
 
-- [ ] **Step 1 (feito na Tarefa T):** Baixar **uma** página real (respeitando o intervalo) do card do Charizard ex (`ed=MEW&num=199`) para `tests/fixtures/liga_carta.html`. Confirmar à mão no fixture o significado de `p/m/g` e anotar na página do padrão.
+- [ ] **Step 1 (feito na Tarefa T):** Salvar a resposta real de uma semana em `tests/fixtures/ptax_periodo.json` (inclui boletins intermediários e um fim de semana).
 - [ ] **Step 2: Testes que falham:**
 
 ```python
-def test_extrai_precos_por_idioma(html_liga):
-    precos = parsear_pagina(html_liga)
-    assert {p.idioma for p in precos} <= {"pt", "en", "ja"}
-    assert all(p.preco_min <= p.preco_medio <= p.preco_max for p in precos)
+def test_normaliza_cotacao(ptax_periodo):
+    c = normalizar_cotacao(ptax_periodo["value"][-1])
+    assert isinstance(c["dt"], date) and isinstance(c["eur_brl"], Decimal)
 
-def test_html_sem_cards_editions_falha_alto():
-    with pytest.raises(ErroEsquemaLiga, match="cards_editions"):
-        parsear_pagina("<html><script>var outra = 1;</script></html>")
+def test_so_boletim_de_fechamento(ptax_periodo):
+    cs = list(cotacoes_ptax(DT1, DT2, buscar=lambda de, ate: ptax_periodo["value"]))
+    assert len({c["dt"] for c in cs}) == len(cs)          # um fechamento por dia
 
-def test_idioma_desconhecido_ignorado(html_liga_com_idioma_99):
-    assert all(p.idioma in {"pt", "en", "ja"} for p in parsear_pagina(html_liga_com_idioma_99))
+def test_periodo_sem_cotacao_nao_e_erro():
+    assert list(cotacoes_ptax(SABADO, DOMINGO, buscar=lambda de, ate: [])) == []
+
+def test_segunda_carga_pede_so_o_que_falta(pipeline, fake_ptax):
+    pipeline.run(fonte_ptax(inicio=DT1)); pipeline.run(fonte_ptax(inicio=DT1))
+    assert fake_ptax.periodos[-1][0] > DT1                 # cursor andou
+    assert contar(pipeline, "ptax_eur") == len(set(fake_ptax.dias))
 ```
 
-- [ ] **Step 3:** Rodar → FAIL. **Step 4:** Implementar com `re` (extrair o literal de `var cards_editions = ...;`) + `json.loads`. Sem BeautifulSoup: o dado está num literal JS. **Step 5:** Rodar → PASS.
-- [ ] **Step 6:** Docs + commit `feat: parser de preços da Liga`.
+- [ ] **Step 3:** Rodar → FAIL. **Step 4:** Implementar. **Step 5:** Rodar → PASS. Carga real desde 2026-01-01.
+- [ ] **Step 6:** ADR-0005 (Liga saiu: Cloudflare bloqueia clientes que não são navegador, e contornar viola a spec; japonesas usam Cardmarket convertido pela PTAX; custo: preço europeu, não brasileiro) + commit `feat: câmbio EUR/BRL da PTAX`.
 
 ---
 
-### Task 8: Coletor da Liga (Checkpointer, Dead-Letter, Horizontal Partitioner)
+### Task 8: Preços Cardmarket via TCGdex (Data Overwrite por dia)
 
-**Quem escreve:** Fernando. **Conceitos:** **Checkpointer:** o próprio arquivo bruto do dia é o checkpoint; se já existe, a carta é pulada, então desligar o Mac no meio não perde trabalho. **Dead-Letter:** carta que falha (HTTP ≠ 200 ou `ErroEsquemaLiga`) vai para `quarentena` com o erro, e a coleta segue. **Horizontal Partitioner:** bruto particionado por data (`dt=YYYY-MM-DD`), facilitando reprocesso e sobrescrita por dia.
+**Quem escreve:** Fernando. **Conceito — Data Overwrite:** cada carga substitui só a partição do dia (`delete-insert` por `dt_coleta`), então reexecutar o mesmo dia é idempotente e os dias anteriores ficam intactos. O preço vem do detalhe da carta no TCGdex (`pricing.cardmarket`, em EUR), buscado só para as cartas-alvo, **no idioma da cópia** (carta japonesa tem id e produto Cardmarket próprios).
 
 **Files:**
-- Create: `src/pokemon_tcg/fontes/liga/coletor.py`, `tests/test_liga_coletor.py`, `dbt/seeds/liga_urls.csv`, `docs/padroes/checkpointer.md`, `docs/padroes/dead-letter.md`, `docs/padroes/horizontal-partitioner.md`, `docs/adr/0005-liga-escopo-restrito-e-urls-manuais.md`
+- Create: `src/pokemon_tcg/fontes/cardmarket.py`, `tests/test_cardmarket.py`, `tests/fixtures/tcgdex_carta_ja.json`, `dbt/models/marts/alvos_precos.sql` + `.yml`, `docs/padroes/data-overwrite.md`
 
 **Interfaces:**
-- Consumes: `parsear_pagina`, `ErroEsquemaLiga` (Task 7); `config.LIGA_INTERVALO_S`, `config.USER_AGENT`.
+- Consumes: `int_copias_com_destino`, `faltantes_por_colecao` (Task 6).
 - Produces:
-  - seed `liga_urls(carta_id, idioma, url)`: URL da Liga por carta, mantida à mão. **Decisão deste plano:** cartas japonesas não têm edição equivalente direta na Liga, e o escopo é pequeno, então mapear URL por carta é mais simples que um de-para de edições.
-  - `coletar(alvos: list[AlvoLiga], dt: date, buscar: Callable[[str], httpx.Response], dormir: Callable[[float], None] = time.sleep) -> ResumoColeta`
-  - `AlvoLiga = dataclass(carta_id: str, idioma: str, url: str)`; `ResumoColeta = dataclass(baixadas: int, puladas: int, quarentena: int)`.
-  - Arquivos: `dados/bruto/liga/dt={dt}/{carta_id}__{idioma}.html`; `dados/quarentena/liga/dt={dt}/{carta_id}__{idioma}.json` com `{"url", "erro", "status"}`.
-  - Dorme `LIGA_INTERVALO_S` **entre** requisições reais (não antes da primeira, não após puladas).
+  - Mart `alvos_precos`: grão (`carta_id`, `idioma`), coluna `motivo` ∈ {`possuida`, `faltante`} (`possuida` vence). Fonte única da lista de cartas a precificar (MYP na Task 10 também lê daqui).
+  - `extrair_cardmarket(carta: dict) -> dict | None` com `preco_medio_eur`, `preco_min_eur`, `tendencia_eur` (`Decimal`), `atualizado_em: date`; `None` se `pricing` ou `pricing.cardmarket` ausente/nulo.
+  - `precos_cardmarket(alvos: Iterable[tuple[str, str]], buscar: Callable[[str, str], dict]) -> Iterator[dict]`: `buscar(idioma, carta_id)`; carta sem preço é pulada e contada em `ResumoCardmarket.sem_preco`.
+  - `fonte_cardmarket(dt: date, alvos: Iterable[tuple[str, str]])` → `bruto.cardmarket_precos(carta_id, idioma, preco_medio_eur, preco_min_eur, tendencia_eur, atualizado_em, dt_coleta)`, `write_disposition={"disposition": "merge", "strategy": "delete-insert"}`, `merge_key="dt_coleta"`. Respostas cacheadas em `dados/bruto/tcgdex/{idioma}/{carta_id}.json` por dia (`dt=`), reaproveitando o cache da Task 1.
+  - Dataclass `ResumoCardmarket(consultadas: int, com_preco: int, sem_preco: list[str])`.
 
-- [ ] **Step 1: Testes que falham** (com `buscar` e `dormir` falsos, `tmp_path` como raiz):
+- [ ] **Step 1 (feito na Tarefa T):** Salvar uma carta `ja` real com `pricing.cardmarket` em `tests/fixtures/tcgdex_carta_ja.json`.
+- [ ] **Step 2: Testes que falham:**
 
 ```python
-def test_retoma_sem_repetir(tmp_path):
-    alvos = [alvo("a"), alvo("b"), alvo("c")]
-    (dir_dia(tmp_path) / "a__pt.html").write_text(HTML_OK)       # já baixada antes de desligar
+def test_extrai_preco_em_decimal(carta_pt):
+    p = extrair_cardmarket(carta_pt)
+    assert p["preco_medio_eur"] == Decimal(str(carta_pt["pricing"]["cardmarket"]["avg"]))
+
+def test_carta_sem_preco_vira_none(carta_ja):
+    carta_ja["pricing"] = {"cardmarket": None, "tcgplayer": None}
+    assert extrair_cardmarket(carta_ja) is None
+
+def test_busca_no_idioma_da_copia(carta_ja):
     chamadas = []
-    r = coletar(alvos, DT, buscar=fake_ok(chamadas), dormir=lambda s: None)
-    assert [c.split("/")[-1] for c in chamadas] == ["b", "c"]
-    assert (r.baixadas, r.puladas) == (2, 1)
+    list(precos_cardmarket([("M5-115", "ja")], buscar=lambda i, c: chamadas.append((i, c)) or carta_ja))
+    assert chamadas == [("ja", "M5-115")]
 
-def test_intervalo_entre_requisicoes(tmp_path):
-    dormidas = []
-    coletar([alvo("a"), alvo("b")], DT, buscar=fake_ok([]), dormir=dormidas.append)
-    assert dormidas == [360]
+def test_reprocessar_mesmo_dia_nao_duplica(pipeline, fake_tcgdex):
+    pipeline.run(fonte_cardmarket(DT, ALVOS)); pipeline.run(fonte_cardmarket(DT, ALVOS))
+    assert contar(pipeline, "cardmarket_precos") == len(ALVOS)
 
-def test_falha_vai_para_quarentena_e_segue(tmp_path):
-    r = coletar([alvo("ruim"), alvo("boa")], DT, buscar=fake_500_para("ruim"), dormir=lambda s: None)
-    assert r.quarentena == 1 and r.baixadas == 1
-    assert json.loads((dir_quarentena(tmp_path) / "ruim__pt.json").read_text())["status"] == 500
-
-def test_html_quebrado_vai_para_quarentena(tmp_path):
-    r = coletar([alvo("x")], DT, buscar=fake_html("<html></html>"), dormir=lambda s: None)
-    assert r.quarentena == 1
+def test_outro_dia_preservado(pipeline, fake_tcgdex):
+    pipeline.run(fonte_cardmarket(DT1, ALVOS)); pipeline.run(fonte_cardmarket(DT2, ALVOS)); pipeline.run(fonte_cardmarket(DT2, ALVOS))
+    assert dias(pipeline, "cardmarket_precos") == {DT1, DT2}
 ```
 
-- [ ] **Step 2:** Rodar → FAIL. **Step 3:** Implementar. Valida o HTML com `parsear_pagina` antes de gravar em `bruto`, para que o bruto só contenha páginas parseáveis. **Step 4:** Rodar → PASS.
-- [ ] **Step 5:** Preencher `liga_urls.csv` com o Noivern JP real. Rodar uma coleta real de 1 carta.
-- [ ] **Step 6:** Docs + commit `feat: coletor da Liga com checkpoint e quarentena`.
+  Unit test dbt de `alvos_precos`: cópia `ja` possuída → linha (`carta`, `ja`, `possuida`); carta possuída e faltante → 1 linha `possuida`.
+- [ ] **Step 3:** Rodar → FAIL. **Step 4:** Implementar. **Step 5:** Rodar → PASS.
+- [ ] **Step 6:** Docs + commit `feat: preços Cardmarket por carta via TCGdex`.
 
-**Pergunta de checagem:** por que validar o parse **antes** de gravar o bruto, se o objetivo do bruto é permitir reprocesso?
+**Pergunta de checagem:** se o TCGdex atualizar o preço Cardmarket só uma vez por dia e você rodar a carga três vezes no mesmo dia, quantas linhas o snapshot SCD2 da Task 11 cria? Por quê?
 
 ---
 
-### Task 9: Liga bruto → DuckDB (replay + Data Overwrite por partição)
+### Task 9: (removida)
 
-**Quem escreve:** Fernando. **Conceito — Data Overwrite:** cada carga substitui só a partição do dia (`delete-insert` por `dt_coleta`), então reexecutar o mesmo dia é idempotente. **Replay:** a fonte lê arquivos do bruto, não a rede; um parser novo reprocessa dias antigos sem novas requisições.
-
-**Files:**
-- Create: `src/pokemon_tcg/fontes/liga/fonte.py`, `tests/test_liga_fonte.py`, `docs/padroes/data-overwrite.md`, `docs/padroes/replay.md`
-
-**Interfaces:**
-- Consumes: `parsear_pagina`; arquivos de `dados/bruto/liga/dt=*/`.
-- Produces: `fonte_liga(dts: list[date])` → `bruto.liga_precos(carta_id, idioma, preco_min, preco_medio, preco_max, dt_coleta)`, `write_disposition={"disposition": "merge", "strategy": "delete-insert"}`, `merge_key="dt_coleta"`.
-
-- [ ] **Step 1: Testes que falham:**
-
-```python
-def test_reprocessar_mesmo_dia_nao_duplica(pipeline, bruto_com_2_cartas):
-    pipeline.run(fonte_liga([DT])); pipeline.run(fonte_liga([DT]))
-    assert contar(pipeline, "liga_precos") == len(registros_esperados)
-
-def test_outro_dia_preservado(pipeline, bruto_dois_dias):
-    pipeline.run(fonte_liga([DT1, DT2])); pipeline.run(fonte_liga([DT2]))
-    assert dias(pipeline, "liga_precos") == {DT1, DT2}
-```
-
-- [ ] **Step 2:** Rodar → FAIL. **Step 3:** Implementar. **Step 4:** Rodar → PASS.
-- [ ] **Step 5:** Docs + commit `feat: carga da Liga a partir do bruto`.
+LigaPokémon saiu da fase 1 em 2026-10-18: o site passou a responder com desafio Cloudflare (HTTP 403) para clientes que não são navegador, e contornar isso viola a spec. Os padrões que só a Liga exercitava (Checkpointer, Dead-Letter, Schema Compatibility Enforcer em HTML) ficam para uma fonte futura. Ver ADR-0005.
 
 ---
 
@@ -490,15 +474,15 @@ def test_outro_dia_preservado(pipeline, bruto_dois_dias):
 
 **Quem escreve:** Fernando. **Bloqueio externo:** o token MYP. Fernando pede em `mypcards.com/acesso-api` **no início desta fase**; se não houver resposta em 1 semana, cobra. A tarefa avança com fixture; só o Step 6 depende do token.
 
-**Conceito:** buscar só o que se usa. Em vez de baixar o catálogo inteiro, a lista de cartas vem do próprio warehouse (`alvos_myp`: cópias possuídas + faltantes) e cada carta vira uma requisição a `/precos/{codigo}`. Cada execução grava a "foto" das cartas-alvo naquele dia (Data Overwrite por `dt_coleta`, como na Task 9). Carta que a MYP não conhece (404) não derruba a carga: é contada e registrada.
+**Conceito:** buscar só o que se usa. Em vez de baixar o catálogo inteiro, a lista de cartas vem do próprio warehouse (`alvos_myp`, derivado de `alvos_precos`) e cada carta vira uma requisição a `/precos/{codigo}`. Cada execução grava a "foto" das cartas-alvo naquele dia (Data Overwrite por `dt_coleta`, como na Task 8). Carta que a MYP não conhece (404) não derruba a carga: é contada e registrada.
 
 **Futuro (fora da fase 1):** carga do catálogo inteiro via `GET /pokemon/precos?page_number={n}&page_size=50`, se um dia o dashboard precisar de preço de carta fora dos alvos. O desenho já deixa o encaixe: `fonte_myp` recebe um iterador de `Produto`; o modo catálogo seria só outro gerador (`paginas_myp`) alimentando o mesmo recurso e a mesma tabela.
 
 **Files:**
-- Create: `src/pokemon_tcg/fontes/myp.py`, `tests/test_myp.py`, `tests/fixtures/myp_carta.json`, `dbt/seeds/de_para_edicoes_myp.csv`, `dbt/models/marts/alvos_myp.sql` + `.yml`, `docs/adr/0006-myp-primaria-liga-secundaria.md`
+- Create: `src/pokemon_tcg/fontes/myp.py`, `tests/test_myp.py`, `tests/fixtures/myp_carta.json`, `dbt/seeds/de_para_edicoes_myp.csv`, `dbt/models/marts/alvos_myp.sql` + `.yml`, `docs/adr/0006-myp-primaria-cardmarket-secundaria.md`
 
 **Interfaces:**
-- Consumes: `int_copias_com_destino`, `faltantes_por_colecao` (Task 6), seed `de_para_edicoes_myp`.
+- Consumes: `alvos_precos` (Task 8, só idiomas `pt`/`en`: MYP não tem japonesas), seed `de_para_edicoes_myp`.
 - Produces:
   - `codificar_codigo(codigo: str) -> str`: Base64 do código MYP (ex. `LOB-001` → `TE9CLTAwMQ==`).
   - `precos_por_carta(codigos: Iterable[str], buscar: Callable[[str], dict | None]) -> Iterator[dict]`: um `Produto` por código encontrado; `buscar` devolve `None` em 404 e o código entra em `ResumoMyp.nao_encontrados`.
@@ -532,7 +516,7 @@ def test_sem_token_falha_com_mensagem():
 
   Unit test dbt de `alvos_myp`: 1 cópia possuída + 1 faltante da mesma carta → 1 linha com `motivo = possuida`; carta sem de-para → 0 linhas.
 - [ ] **Step 2:** Rodar → FAIL. **Step 3:** Implementar. **Step 4:** Rodar → PASS.
-- [ ] **Step 5:** ADR-0006 (inclui: MYP reflete mercado de trocas entre colecionadores; sem idioma, condição nem japonesas; só cartas-alvo, catálogo inteiro como opção futura) + commit `feat: fonte MYP por carta`.
+- [ ] **Step 5:** ADR-0006 (inclui: MYP reflete mercado de trocas entre colecionadores; sem idioma, condição nem japonesas; Cardmarket cobre o resto; só cartas-alvo, catálogo inteiro como opção futura) + commit `feat: fonte MYP por carta`.
 - [ ] **Step 6 (quando houver token):** spike com 3 cartas possuídas para descobrir o formato exato de `{codigo}` (`card_code`? `edition_code` + número?) e preencher o de-para para as edições das cartas possuídas; ajustar `alvos_myp` se o formato pedir. Verificar: `select count(*) from bruto.myp_precos where dt_coleta = current_date` = `select count(*) from alvos_myp` − `nao_encontrados`.
 
 ---
@@ -542,19 +526,20 @@ def test_sem_token_falha_com_mensagem():
 **Quem escreve:** Fernando. **Conceitos:** **Adapter de fontes:** uma staging por fonte, todas no mesmo formato, unidas em `int_precos_unificados`. **SCD2 via snapshot:** cada mudança de preço vira nova linha com `dbt_valid_from`/`dbt_valid_to`; lacunas de dias (sistema desligado) não criam linhas falsas. **Audit-Write-Audit-Publish:** escrever primeiro numa área intermediária, auditar e só então publicar nos marts. Se a auditoria falha, os marts continuam com a versão anterior.
 
 **Files:**
-- Create: `dbt/models/staging/stg_myp__precos.sql`, `stg_liga__precos.sql`, `dbt/models/intermediate/int_precos_unificados.sql` + `.yml`, `dbt/snapshots/snp_precos.sql`, `dbt/models/marts/historico_precos.sql`, `cartas_para_venda.sql`, `dbt/tests/auditoria_preco_positivo.sql`, `auditoria_preco_fora_da_curva.sql`, `docs/padroes/audit-write-audit-publish.md`, `docs/padroes/scd2.md`
+- Create: `dbt/models/staging/stg_myp__precos.sql`, `stg_cardmarket__precos.sql`, `stg_ptax__cotacoes.sql`, `dbt/models/intermediate/int_precos_unificados.sql` + `.yml`, `dbt/snapshots/snp_precos.sql`, `dbt/models/marts/historico_precos.sql`, `cartas_para_venda.sql`, `dbt/tests/auditoria_preco_positivo.sql`, `auditoria_preco_fora_da_curva.sql`, `docs/padroes/audit-write-audit-publish.md`, `docs/padroes/scd2.md`
 
 **Interfaces:**
 - Produces:
-  - `int_precos_unificados`: grão (`carta_id`, `idioma_preco`, `fonte`), apenas a última `dt_coleta` de cada fonte; colunas `preco_min`, `preco_medio`, `preco_max`, `observado_em` (date). `idioma_preco` = `null` para MYP (sem separação), `pt/en/ja` para Liga. Tag `auditoria_precos` nos testes.
+  - `int_precos_unificados`: grão (`carta_id`, `idioma_preco`, `fonte`), apenas a última `dt_coleta` de cada fonte; colunas `preco_min`, `preco_medio`, `preco_max`, `observado_em` (date). `idioma_preco` = `null` para MYP (sem separação), idioma da carta para Cardmarket. Cardmarket entra já em BRL: `avg`/`low` × `eur_brl` da PTAX de `observado_em` ou do último dia útil anterior (join *as-of*); colunas extras `moeda_origem`, `cotacao_usada`. Tag `auditoria_precos` nos testes.
   - `snp_precos`: `strategy='check'`, `check_cols=['preco_min','preco_medio','preco_max']`, `unique_key` = `carta_id || '|' || coalesce(idioma_preco,'*') || '|' || fonte`.
   - `historico_precos`: snapshot com nomes em português (`valido_de`, `valido_ate`).
-  - `cartas_para_venda`: cópias com `destino='venda'` + preço de referência: Liga (mesmo idioma) para `ja`; MYP para `pt`/`en` (fallback Liga). Colunas `preco_referencia_brl` (médio), `preco_min_brl`, `preco_max_brl`, `fonte`, `observado_em`, `imagem_url`.
+  - `cartas_para_venda`: cópias com `destino='venda'` + preço de referência: Cardmarket (mesmo idioma) para `ja`; MYP para `pt`/`en` (fallback Cardmarket). Colunas `preco_referencia_brl` (médio), `preco_min_brl`, `preco_max_brl`, `fonte`, `observado_em`, `imagem_url`.
 - Auditoria (testes singulares, `tags: ['auditoria_precos']`): `preco_medio > 0`; `preco_medio <= 100 * mediana` do histórico da mesma carta/fonte (sem histórico, passa).
 
 - [ ] **Step 1: Unit tests dbt que falham:**
   - `int_precos_unificados` mantém só a última `dt_coleta` por fonte.
-  - `cartas_para_venda`: cópia `ja` usa preço Liga `ja`; cópia `pt` usa MYP; cópia `pt` sem MYP usa Liga `pt`.
+  - `cartas_para_venda`: cópia `ja` usa Cardmarket `ja`; cópia `pt` usa MYP; cópia `pt` sem MYP usa Cardmarket.
+  - `stg_cardmarket__precos`: preço observado num domingo usa a PTAX da sexta; sem cotação anterior, `preco_medio` nulo (Review Focus 3).
 - [ ] **Step 2: Teste da auditoria:** fixture com `preco_medio = 0` → `uv run dbt test --project-dir dbt --select tag:auditoria_precos` falha com 1 linha; fixture com 150× a mediana → falha.
 - [ ] **Step 3:** Rodar → FAIL. **Step 4:** Implementar. **Step 5:** Rodar → PASS.
 - [ ] **Step 6:** Verificar SCD2: rodar `dbt snapshot` duas vezes com o mesmo preço → 1 linha; mudar o preço no bruto e rodar de novo → 2 linhas, a antiga com `dbt_valid_to` preenchido.
@@ -577,9 +562,9 @@ def test_sem_token_falha_com_mensagem():
 - Flows:
   - `ingerir_catalogo()`: TCGdex + PokeAPI; marca prontos.
   - `ingerir_inventario()`.
-  - Toda ingestão chama `marcar_pronto(<fonte>, dt)` ao terminar sem erro; nomes de fonte: `tcgdex`, `pokeapi`, `inventario`, `myp`, `liga`.
+  - Toda ingestão chama `marcar_pronto(<fonte>, dt)` ao terminar sem erro; nomes de fonte: `tcgdex`, `pokeapi`, `inventario`, `myp`, `cardmarket`, `ptax`.
   - `transformar(fontes_exigidas: list[str], dt: date)`: falha com `FonteNaoPronta` se faltar marcador; senão, AWAP: `dbt build --exclude tag:marts` (write) → `dbt test --select tag:auditoria_precos` (audit) → `dbt snapshot` → `dbt build --select tag:marts` (publish) → `exportar_metricas()` (Task 13) → `npm run sources` no Evidence.
-  - `atualizar_precos(escopo: Literal["a_venda", "colecao", "tudo"] = "a_venda")`: `ingerir_inventario` → MYP com os códigos de `alvos_myp` (se houver token; senão loga aviso e segue) → Liga com alvos do escopo (`a_venda` = cópias `venda` com URL; `colecao` = cópias `ja`; `tudo` = união) → `transformar`.
+  - `atualizar_precos()`: `ingerir_inventario` → `dbt build --select +alvos_precos +alvos_myp` (a lista de alvos vem do warehouse) → PTAX → Cardmarket com `alvos_precos` → MYP com `alvos_myp` (se houver token; senão loga aviso e segue) → `transformar`.
   - `verificar_frescor() -> int`: dias desde o último `observado_em`; se > `LIMIAR_DIAS_PRECO_VELHO`, cria artefato markdown no Prefect "Preços com N dias. Rode atualizar_precos." e loga `WARNING`.
 - Deployments servidos por `servir.py`: `atualizar-precos`, `ingerir-catalogo`, `verificar-frescor`. **Sem agendamento** (o sistema não fica ligado).
 
@@ -587,8 +572,8 @@ def test_sem_token_falha_com_mensagem():
 
 ```python
 def test_transformar_exige_marcador():
-    with pytest.raises(FonteNaoPronta, match="liga"):
-        transformar(["liga"], DT)
+    with pytest.raises(FonteNaoPronta, match="cardmarket"):
+        transformar(["cardmarket"], DT)
 
 def test_auditoria_reprovada_nao_publica(fake_dbt):
     fake_dbt.falhar_em("test")
@@ -596,9 +581,10 @@ def test_auditoria_reprovada_nao_publica(fake_dbt):
         transformar([], DT)
     assert "build --select tag:marts" not in fake_dbt.comandos
 
-def test_escopo_invalido():
-    with pytest.raises(ValueError):
-        atualizar_precos("qualquer")
+def test_sem_token_myp_segue_com_cardmarket(fake_fontes, monkeypatch):
+    monkeypatch.delenv("MYP_API_TOKEN", raising=False)
+    atualizar_precos()
+    assert "cardmarket" in fake_fontes.rodadas and "myp" not in fake_fontes.rodadas
 
 def test_frescor_avisa(precos_de_10_dias_atras, caplog):
     assert verificar_frescor() == 10
@@ -606,7 +592,7 @@ def test_frescor_avisa(precos_de_10_dias_atras, caplog):
 ```
 
 - [ ] **Step 2:** Rodar → FAIL. **Step 3:** Implementar. **Step 4:** Rodar → PASS.
-- [ ] **Step 5:** Verificar ponta a ponta: `make up` → UI em `http://localhost:4200` lista os 3 deployments → clicar **Run** em `atualizar-precos` (escopo `colecao`) → termina `Completed`; `select * from historico_precos` traz o Noivern JP.
+- [ ] **Step 5:** Verificar ponta a ponta: `make up` → UI em `http://localhost:4200` lista os 3 deployments → clicar **Run** em `atualizar-precos` → termina `Completed`; `select * from historico_precos` traz o Noivern JP.
 - [ ] **Step 6:** ADR-0007 com o motivo do Fernando (conhece pouco e usa num cliente) + commit `feat: fluxos Prefect com AWAP e frescor`.
 
 ---
@@ -643,7 +629,7 @@ def test_frescor_avisa(precos_de_10_dias_atras, caplog):
   - **Fichário:** seletor de coleção; grade de imagens (`DataTable` com `contentType="image"`) das cartas alvo; possuídas e faltantes distinguidas (faltante em escala de cinza ou rótulo "falta"); contador "faltam N".
   - **Para venda:** tabela com imagem, nome, idioma, condição, preço de referência, faixa min–max, fonte, "preço visto em DD/MM"; total em BRL.
   - **Preços:** seletor de carta; linha do tempo de `preco_medio` por fonte.
-  - Rodapé de toda página com preço MYP: "Preços: MYP Cards" com link.
+  - Rodapé de toda página com preço: "Preços: MYP Cards" com link (quando houver preço MYP) e "Cardmarket via TCGdex, convertido de EUR pela PTAX do Banco Central" (quando houver preço Cardmarket).
 
 - [ ] **Step 1:** Esqueleto + conexão. Verificar `npm run sources` sem erro.
 - [ ] **Step 2: Invocar a skill Hallmark** antes de escrever qualquer página: direção visual (tipografia, cores do tema Evidence, layout da grade do fichário, estados possuída/faltante). A Hallmark trabalha dentro dos componentes do Evidence (tema e layout), sem substituir o framework.

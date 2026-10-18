@@ -51,7 +51,7 @@ O projeto tem um **segundo objetivo, tão importante quanto o primeiro**: ser o 
 - **Execução local** no Mac do Fernando. Custo zero.
 - **Liga/desliga fácil:** o sistema inteiro sobe e desce com um comando, para não consumir recursos quando não está em uso. Consequência: não existe agendamento diário garantido; os dados de preço terão lacunas, e o desenho precisa tratar isso como normal.
 - **Português-first** em tudo.
-- **Respeito às fontes:** LigaPokémon tem `Crawl-delay: 360` (1 requisição a cada 6 minutos) e proíbe a página de histórico de preços no `robots.txt`. MYP Cards exige token e atribuição visível ("MYP Cards" com link) onde seus dados aparecerem.
+- **Respeito às fontes:** Nenhuma proteção anti-bot é contornada (motivo da saída da LigaPokémon em 2026-10-18). MYP Cards exige token e atribuição visível ("MYP Cards" com link) onde seus dados aparecerem.
 
 ## 4. Fontes de dados (verificadas em 2026-10-17)
 
@@ -60,13 +60,15 @@ O projeto tem um **segundo objetivo, tão importante quanto o primeiro**: ser o 
 | **TCGdex** (`api.tcgdex.net/v2/{lang}`) | Catálogo de cartas | REST/GraphQL, sem chave, licença MIT, SDK Python `tcgdex-sdk` | Usar idiomas `pt`, `en`, `ja` (**não** `pt-br`, que só tem TCG Pocket). Cada carta tem `rarity` ("Ilustração Rara Especial"), `types` (`Dragão`), `dexId` (lista), `localId` (número), `set.id`, imagem (`assets.tcgdex.net/...`). Também traz preços Cardmarket (EUR) e TCGplayer (USD). Sem rate limit publicado; pede cache. |
 | **PokeAPI** (`pokemon-species/{id}`) | Flag de lendário/mítico | REST, sem chave | `is_legendary`, `is_mythical`. Join pelo `dexId` do TCGdex. Carga única de ~1.025 espécies. |
 | **MYP Cards API** (`mypcards.com/api/v1`) | **Preço BRL primário** | Header `X-Api-Token`, pedido em `mypcards.com/acesso-api` (aprovação manual) | Listagem paginada de **todo** o catálogo Pokémon (50 por página). `min_price`/`avg_price`/`max_price` em BRL, `tcg_price` (USD), `name_pt`, `edition_code`, `card_code`, `img_pt`. **Não tem**: separação por idioma, condição, histórico, edições japonesas ("edições orientais não são retornadas"). Reflete mercado entre colecionadores (trocas), não só lojas. Exige atribuição. |
-| **LigaPokémon** (`ligapokemon.com.br`) | **Preço BRL secundário**, só onde a MYP não cobre | Scraping de HTML, sem API | Preço embutido como JSON na página: `cards_editions` (`price` por idioma, `p/m/g` = mín/méd/máx) e `cards_stock` (ofertas com `precoFinal`, `qualid`, `idioma`). Idiomas: 8=PT, 2=EN, 6=JP. Condição: 1=M, 2=NM, 3=SP, 4=MP, 5=HP. Códigos de edição próprios (precisa de tabela de-para com TCGdex). **6 minutos por requisição.** |
+| **Cardmarket via TCGdex** (`pricing.cardmarket` no detalhe da carta) | **Preço secundário**, onde a MYP não cobre (japonesas, cartas que a MYP não acha) | REST, sem chave, já usado no catálogo | `avg`, `low`, `trend` em EUR, por carta e idioma (carta `ja` tem produto próprio). Preço do mercado europeu, não brasileiro. 21 de 24 cartas `ja` recentes amostradas tinham preço (2026-10-18). |
+| **PTAX Banco Central** (`olinda.bcb.gov.br`, OData) | Câmbio EUR/BRL | REST, sem chave, oficial | Cotação de venda por dia útil (boletim `Fechamento`). Sem cotação em fim de semana e feriado: usa o último dia útil anterior. |
+| ~~LigaPokémon~~ | *Removida em 2026-10-18* | — | Passou a responder com desafio Cloudflare (HTTP 403) a clientes que não são navegador; contornar viola os anti-objetivos. Volta só se houver acesso legítimo (API ou permissão). |
 
 **Escopo da MYP:** só as cartas-alvo (possuídas + faltantes), via `GET /pokemon/precos/{codigo}` (código em Base64), poucas vezes por semana. Catálogo inteiro paginado fica como opção futura, se o dashboard precisar de preço fora dos alvos. *Decisão do Fernando, 2026-10-18.*
 
-**Escopo da Liga:** apenas cartas japonesas **possuídas** e, opcionalmente, cartas à venda onde a condição importa. Cartas faltantes são precificadas só pela MYP. Se o token da MYP for negado, a Liga volta a ser fonte primária (ver risco R1).
+**Japonesas e lacunas da MYP:** preço Cardmarket (EUR) do próprio TCGdex, convertido pela PTAX. Buscado só para as cartas-alvo, como a MYP. *Decisão do Fernando, 2026-10-18, substituindo a Liga.*
 
-**Qual número é "o preço":** `avg_price` (MYP) / `m` (Liga) é o preço de referência para valor de venda; mínimo e máximo aparecem ao lado como faixa. *Decisão do assistente.*
+**Qual número é "o preço":** `avg_price` (MYP) / `avg` Cardmarket convertido (PTAX) é o preço de referência para valor de venda; mínimo e máximo aparecem ao lado como faixa. *Decisão do assistente.*
 
 ## 5. Stack técnica e justificativas
 
@@ -77,7 +79,7 @@ Cada linha vira um ADR (seção 9).
 | Linguagem / pacotes | **Python + uv** | Padrão de mercado em DE; uv é rápido e substitui pip/poetry. | poetry |
 | Ingestão | **dlt** *(novo)* | Biblioteca, não plataforma. Estado incremental, evolução de schema e `write_disposition` (append/replace/merge) embutidos: padrões do livro visíveis em código. Fontes customizadas para MYP e Liga. | Airbyte (Fernando já conhece; plataforma pesada para local) |
 | Banco do app (inventário) | **Postgres** (Docker) | O bot escreve no inventário enquanto o pipeline roda; DuckDB aceita **só um escritor**. Separar OLTP (Postgres) de OLAP (DuckDB) espelha sistemas reais e torna o inventário uma fonte de ingestão. | SQLite |
-| Armazenamento bruto | **Arquivos locais**: HTML bruto da Liga + Parquet particionado por data | Guardar o HTML permite **reprocessar** quando o parser mudar sem re-raspar a 6 min/carta. | Só tabelas |
+| Armazenamento bruto | **Arquivos locais**: JSON bruto do TCGdex em cache por dia | Guardar a resposta permite **reprocessar** sem refazer requisições. | Só tabelas |
 | Warehouse analítico | **DuckDB** *(novo)* | Um arquivo, sem servidor, custo zero; `dbt-duckdb` maduro; lê Parquet direto; ensina OLAP colunar. | Postgres como warehouse |
 | Transformação | **dbt** | Padrão da indústria, Fernando usa diariamente. Foco em snapshots (SCD2), incrementais, testes, seeds. | — |
 | Métricas | **dbt Semantic Layer (MetricFlow)** *(novo)* + **mart de métricas materializado** | Métrica definida **uma vez** no MetricFlow. Limitação: o MetricFlow open source só compila SQL; consulta ao vivo via API é recurso do dbt Cloud (pago). Por isso as métricas são materializadas numa tabela (`metricas_colecao`) que o dashboard e o bot leem: a definição continua única e os números nunca divergem. *Decisão do assistente.* | SQL duplicado em cada consumidor; dbt Cloud (pago) |
@@ -109,13 +111,13 @@ Cada linha vira um ADR (seção 9).
    - **Identidade da carta = edição + número**, nunca só o número. Cartas com o mesmo número em edições diferentes são cartas diferentes (acontece com reimpressões dos clássicos, como na coleção de 30 anos). *Decisão do Fernando.*
    - **Lista de referência = catálogo `pt`.** Uma cópia em inglês da mesma edição + número preenche a vaga da carta em português. Cartas japonesas não preenchem vagas: aparecem no inventário como extras. *Sugestão do assistente, não contestada.*
    - **Regra de destino (derivada, não digitada):** uma cópia pode preencher as duas coleções ao mesmo tempo (ex.: Rayquaza é Dragão e Lendário); a primeira cópia de uma carta que pertence a alguma coleção fica na coleção; cópias extras e cartas fora das duas coleções vão para venda; Fernando pode sobrescrever manualmente por cópia. *Decisão do Fernando.*
-4. **Preços:** MYP (via API, só as cartas-alvo: possuídas + faltantes, uma requisição por carta) + Liga (escopo restrito, com HTML bruto guardado). Histórico próprio via **dbt snapshot (SCD2)**.
-5. **Seed de-para** de códigos de edição: TCGdex `set.id` ↔ MYP `edition_code` ↔ Liga `ed`.
+4. **Preços:** MYP (via API, só as cartas-alvo: possuídas + faltantes, uma requisição por carta) + Cardmarket via TCGdex (EUR → BRL pela PTAX) onde a MYP não cobre. Histórico próprio via **dbt snapshot (SCD2)**.
+5. **Seed de-para** de códigos de edição: TCGdex `set.id` ↔ MYP `edition_code`.
 6. **Marts:** `faltantes_por_colecao`, `cartas_para_venda`, `historico_precos`, `resumo_colecao` (contagens e percentuais).
 7. **Métricas** no Semantic Layer: `cartas_faltantes`, `pct_completo`, `valor_venda_brl`, entre outras.
 8. **Dashboard Evidence** com três telas:
    - **Fichário:** grade de imagens por coleção; possuídas coloridas, faltantes em cinza; contador "faltam N".
-   - **Para venda:** cartas fora das coleções, preço MYP/Liga em BRL, valor total.
+   - **Para venda:** cartas fora das coleções, preço MYP/Cardmarket em BRL, valor total.
    - **Preços:** histórico por carta, sempre exibindo "preço visto em DD/MM".
 9. **Orquestração Prefect** com deployment `atualizar_precos` parametrizado por escopo (`a_venda` | `colecao` | `tudo`), disparável pelo botão "Run" da UI do Prefect (link a partir do Evidence, que é estático e não hospeda botão próprio).
 10. **Checagem de frescor ao ligar:** ao `make up`, um fluxo verifica a idade dos preços e avisa se passou de X dias.
@@ -147,8 +149,6 @@ Cada padrão ganha uma página no catálogo (seção 9). Nomes seguem o livro; a
 | Ingestão | **Full Loader** | Catálogo TCGdex, espécies PokeAPI |
 | Ingestão | **Incremental Loader** | Inventário do Postgres para o DuckDB |
 | Ingestão | **Readiness Marker** | dbt só roda depois da ingestão terminar e marcar pronto |
-| Erros | **Dead-Letter** | Páginas da Liga que falham no parse vão para uma área de quarentena |
-| Erros | **Checkpointer** | Scraping da Liga retoma de onde parou se o Mac desligar no meio |
 | Idempotência | **Merger** (upsert) | Inventário e catálogo |
 | Idempotência | **Data Overwrite** por partição | Snapshot de preço por data de coleta |
 | Idempotência | **Keyed Idempotency** | Webhook do WhatsApp deduplicado por `message_id` (a Meta reenvia) |
@@ -156,10 +156,10 @@ Cada padrão ganha uma página no catálogo (seção 9). Nomes seguem o livro; a
 | Valor | **Decorator** | Idioma/condição/origem anexados à cópia possuída |
 | Fluxo | **Fan-in** | Catálogo + preços + inventário alimentando os marts |
 | Fluxo | **Exclusive Choice** | Bot: um candidato grava direto, vários pedem escolha |
-| Armazenamento | **Horizontal Partitioner** | Parquet de preços particionado por data |
+| Armazenamento | **Horizontal Partitioner** | Bruto e preços particionados por `dt_coleta` (Data Overwrite por dia) |
 | Armazenamento | SCD2 (dbt snapshot) | Histórico de preços com `valid_from`/`valid_to`, lidando com lacunas |
 | Qualidade | **Audit-Write-Audit-Publish** | Preço só é publicado após checagens (ex.: R$ 0, variação absurda) |
-| Qualidade | **Schema Compatibility Enforcer** | Detectar mudança no HTML da Liga ou no schema da MYP |
+| Qualidade | **Schema Compatibility Enforcer** | Detectar mudança no schema da MYP ou do `pricing` do TCGdex |
 | Observabilidade | **Lag / Flow Interruption Detector** | Checagem de frescor ao ligar o sistema |
 | Integração | Replay a partir do bruto | Reprocessar HTML guardado com parser novo |
 | Integração | Adapter (fontes e canais) | Uma staging por fonte de preço + modelo unificado `precos`; núcleo do bot independente de canal |
@@ -169,15 +169,15 @@ Cada padrão ganha uma página no catálogo (seção 9). Nomes seguem o livro; a
 - **UI:** toda construção ou redesenho de interface (dashboard Evidence, eventual fallback Streamlit) passa pela skill **Hallmark**. UI só está pronta depois de vista: screenshots a 1440px e 390px, checadas contra a intenção e o slop-test da Hallmark.
 - **Idioma:** UI, mensagens do bot, nomes de modelos dbt, colunas e documentação em português.
 - **Segurança:** tokens (MYP, Meta) fora do código, em `.env` não versionado ou gerenciador de segredos; nunca em logs.
-- **Polidez com fontes:** respeitar `Crawl-delay` da Liga, `User-Agent` identificável, cache agressivo do TCGdex, atribuição visível da MYP no dashboard e nas respostas do bot.
+- **Polidez com fontes:** `User-Agent` identificável, cache agressivo do TCGdex, atribuição visível da MYP e do Cardmarket/TCGdex no dashboard e nas respostas do bot.
 - **Dados ausentes são normais:** toda exibição de preço mostra a data da observação.
 - **Reprodutibilidade:** `make up` em máquina limpa (com Docker) sobe tudo; `make down` libera recursos.
 - **TDD com suíte completa primeiro:** antes de qualquer código de produção, a suíte de testes inteira da fase é escrita e vista falhando (vermelha). Só então cada parte é implementada até ficar verde. Teste só muda depois disso se estiver errado, nunca para se ajustar ao código.
-- **Testes:** testes do dbt (unicidade, não nulo, relações, faixas de preço) e testes Python onde ajudam a aprender (parser da Liga com HTML fixo, idempotência do webhook). Cada teste documenta o que prova.
+- **Testes:** testes do dbt (unicidade, não nulo, relações, faixas de preço) e testes Python onde ajudam a aprender (normalização com JSON fixo, idempotência do webhook). Cada teste documenta o que prova.
 
 ## 9. Documentação exigida
 
-1. **ADRs** (`docs/adr/NNNN-titulo.md`): contexto, opções consideradas, decisão, porquê, consequências. Um por escolha da seção 5, mais "histórico de preços próprio em vez do da Liga", "MYP primária, Liga secundária", "por que não Spark", "bot só responde (sem alertas pagos)".
+1. **ADRs** (`docs/adr/NNNN-titulo.md`): contexto, opções consideradas, decisão, porquê, consequências. Um por escolha da seção 5, mais "histórico de preços próprio", "MYP primária, Cardmarket secundária", "saída da Liga", "por que não Spark", "bot só responde (sem alertas pagos)".
 2. **Catálogo de padrões** (`docs/padroes/<padrao>.md`): o que é, problema que resolve, onde está no repositório (caminhos), alternativa não usada e por quê, referência ao capítulo do livro.
 3. **Ligação código ↔ documentação:** cada modelo/tarefa que implementa um padrão tem comentário apontando para a página do padrão.
 4. **Gerado por ferramenta:** linhagem e colunas via `dbt docs`; DAG via UI do Prefect. Escrita manual só para o *porquê*.
@@ -192,12 +192,12 @@ Cada padrão ganha uma página no catálogo (seção 9). Nomes seguem o livro; a
 
 | # | Risco | Mitigação |
 |---|---|---|
-| R1 | **Token MYP negado ou demorado.** Ação do Fernando: pedir em `mypcards.com/acesso-api` no início da implementação; cobrar se não houver resposta em 1 semana. Enquanto não chega, a fase 1 avança por catálogo, inventário e Liga. | Camada de preço plugável; Liga vira primária (aceitando 6 min/carta e escopo menor). |
-| R2 | HTML da Liga muda e quebra o parser. | HTML bruto guardado + replay; Schema Compatibility Enforcer avisa. |
-| R3 | MYP não separa idioma: preço de uma carta PT pode vir misturado com EN. | Documentar como limitação; Liga para quando idioma importa. |
+| R1 | **Token MYP negado ou demorado.** Ação do Fernando: pedir em `mypcards.com/acesso-api` no início da implementação; cobrar se não houver resposta em 1 semana. Enquanto não chega, a fase 1 avança por catálogo, inventário e Cardmarket. | Camada de preço plugável; Cardmarket vira primária (preço europeu convertido). |
+| R2 | Preço Cardmarket é do mercado europeu e pode divergir do brasileiro. | Rótulo explícito "Cardmarket, convertido de EUR"; MYP tem prioridade quando existe. |
+| R3 | MYP não separa idioma: preço de uma carta PT pode vir misturado com EN. | Documentar como limitação; Cardmarket separa por idioma quando importa. |
 | R4 | Meta muda preços ou regras do WhatsApp. | Bot via adapter; Discord como saída. |
-| R5 | De-para de códigos de edição entre TCGdex, MYP e Liga é manual. | Seed versionado; teste dbt que acusa carta possuída sem mapeamento. |
-| R6 | Termos de uso da Liga não verificados por completo. | Escopo mínimo, respeito ao `robots.txt`, só cartas do próprio Fernando. |
+| R5 | De-para de códigos de edição entre TCGdex e MYP é manual. | Seed versionado; teste dbt que acusa carta possuída sem mapeamento. |
+| R6 | TCGdex deixa de trazer `pricing` ou muda o formato. | Teste de schema na normalização; carta sem preço é contada, não derruba a carga. |
 
 ## 12. Deixado para o construtor
 

@@ -13,7 +13,6 @@ DIR_DADOS = Path(os.environ.get("DIR_DADOS", RAIZ / "dados"))
 
 CAMINHO_DUCKDB = DIR_DADOS / "warehouse.duckdb"
 DIR_BRUTO = DIR_DADOS / "bruto"
-DIR_QUARENTENA = DIR_DADOS / "quarentena"
 
 POSTGRES_DSN = os.environ.get(
     "POSTGRES_DSN", "postgresql://tcg:tcg@localhost:5432/tcg"
@@ -21,5 +20,4 @@ POSTGRES_DSN = os.environ.get(
 MYP_API_TOKEN = os.environ.get("MYP_API_TOKEN") or None
 
 USER_AGENT = "pokemon-tcg-pessoal/0.1 (+oliveirafer06@gmail.com)"
-LIGA_INTERVALO_S = 360  # robots.txt da Liga: Crawl-delay 360
 LIMIAR_DIAS_PRECO_VELHO = 7

@@ -1,7 +1,7 @@
 from pokemon_tcg import config
 
-def test_intervalo_liga_respeita_robots():
-    assert config.LIGA_INTERVALO_S >= 360
+def test_user_agent_identificavel():
+    assert "@" in config.USER_AGENT
 
 def test_token_myp_nao_tem_valor_padrao(monkeypatch):
     monkeypatch.delenv("MYP_API_TOKEN", raising=False)
